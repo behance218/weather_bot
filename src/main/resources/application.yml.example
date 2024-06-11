@@ -1,0 +1,15 @@
+bot:
+  name: *
+  token: *
+  openweathermap-api-key: *
+spring:
+  datasource:
+    name: *
+    username: *
+    password: *
+    url: *
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    show-sql: true
+    hibernate:
+      ddl-auto: create

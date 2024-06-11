@@ -1,0 +1,15 @@
+bot:
+  name: Behance_weather_bot
+  token: 7344539876:AAHUhaObL8wKJPMIPJzTIpIksT2PdRPPSd4
+  openweathermap-api-key: 707c8a7f841a2f33de23d3e7b4ea994b
+spring:
+  datasource:
+    name: weather_bot
+    username: postgres
+    password: 70131
+    url: jdbc:postgresql://localhost:5432/weather_bot
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    show-sql: true
+    hibernate:
+      ddl-auto: create
