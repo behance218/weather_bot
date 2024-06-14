@@ -8,11 +8,14 @@ import net.dunice.mk.mkhachemizov.weather_bot.repository.WeatherRepository;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
+import org.telegram.telegrambots.meta.api.objects.Location;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton;
@@ -61,9 +64,18 @@ public class WeatherService extends TelegramLongPollingBot {
             else if (messageText.equals("Меню")) {
                 sendMenuMessage(chatId);
             }
-            else if (messageText.startsWith("Погода")) {
-                String city = messageText.split(" ")[1];
-                handleWeatherRequest(chatId, city);
+            else if (messageText.equals("Погода")) {
+                requestLocation(chatId);
+            }
+        }
+        else if (update.hasMessage() && update.getMessage().hasLocation()) {
+            Location location = update.getMessage().getLocation();
+            String city = getCityFromLocation(location.getLatitude(), location.getLongitude());
+            if (city != null) {
+                handleWeatherRequest(update.getMessage().getChatId(), city);
+            }
+            else {
+                sendMessage(update.getMessage().getChatId(), "Не удалось определить город по вашему местоположению.");
             }
         }
     }
@@ -123,11 +135,27 @@ public class WeatherService extends TelegramLongPollingBot {
         ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
         List<KeyboardRow> keyboard = new ArrayList<>();
         KeyboardRow row = new KeyboardRow();
-        row.add(new KeyboardButton("Погода"));
-        row.add(new KeyboardButton("Инфо"));
+
+        KeyboardButton weatherButton = new KeyboardButton("Погода");
+        weatherButton.setRequestLocation(true);
+        row.add(weatherButton);
+        row.add(new KeyboardButton("Информация"));
         keyboard.add(row);
         keyboardMarkup.setKeyboard(keyboard);
         return keyboardMarkup;
+    }
+
+    private void requestLocation(long chatId) {
+        SendMessage message = new SendMessage();
+        message.setChatId(chatId);
+        message.setText("Пожалуйста отправьте ваше местоположение");
+        message.setReplyMarkup(getMenuKeyboard());
+        try {
+            execute(message);
+        }
+        catch (TelegramApiException exception) {
+            log.error("Не удалось запросить местоположение юзера", exception);
+        }
     }
 
     private void handleWeatherRequest(long chatId, String city) {
@@ -167,6 +195,30 @@ public class WeatherService extends TelegramLongPollingBot {
         Timestamp timestamp = Timestamp.from(Instant.now().minusSeconds(86400)); // 24 часа
         Optional<WeatherCache> weatherCache = weatherRepository.findByCityAndTimestampAfter(city, timestamp);
         return weatherCache.map(WeatherCache::getWeatherData).orElse(null);
+    }
+
+    private String getCityFromLocation(double latitude, double longitude) {
+        try {
+            String url = String.format("http://api.openweathermap.org/geo/1.0/reverse?lat=%f&lon=%f&limit=1&appid=%s",
+                    latitude,
+                    longitude,
+                    openWeatherMapApiKey);
+            Request request = new Request.Builder().url(url).build();
+            Response response = client.newCall(request).execute();
+            assert response.body() != null;
+            String responseBody = response.body().string();
+//            TODO: FIX ME |
+//                         v
+            JSONArray jsonArray = new JSONArray(responseBody);
+            if (!jsonArray.isEmpty()) {
+                JSONObject jsonObject = jsonArray.getJSONObject(0);
+                return jsonObject.getString("name");
+            }
+        }
+        catch (Exception exception) {
+            log.error("Не удалось вытянуть город из локации юзера", exception);
+        }
+        return null;
     }
 
     private void sendMessage(long chatId, String text) {
