@@ -26,7 +26,9 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
@@ -39,6 +41,8 @@ public class WeatherService extends TelegramLongPollingBot {
     private final OkHttpClient client = new OkHttpClient();
     @Value("${bot.openweathermap-api-key}")
     private String openWeatherMapApiKey;
+    //    TODO: THINK ABOUT THIS FLAG SWITCH (HOW TO IMPLEMENT ITS FUNC FULLY IN onUpdateRecevied METHOD
+    private final Map<Long, Boolean> userRequestMap = new HashMap<>();
 
     @Override
     public String getBotUsername() {
@@ -57,34 +61,34 @@ public class WeatherService extends TelegramLongPollingBot {
             long chatId = update.getMessage().getChatId();
 
             switch (messageText) {
-                case "/start" -> sendStartMessage(chatId);
-                case "Старт" -> sendWelcomeMessage(chatId);
-                case "Меню" -> sendMenuMessage(chatId);
-                case "Погода" -> requestLocation(chatId);
+                case "/start" -> sendWelcomeMessage(chatId);
+                case "Погода" -> {
+                    userRequestMap.put(chatId, false);
+                    requestLocation(chatId);
+                }
+                case "Погода на неделю" -> {
+                    userRequestMap.put(chatId, true);
+                    requestLocation(chatId);
+                }
             }
         }
         else if (update.hasMessage() && update.getMessage().hasLocation()) {
+            long chatId = update.getMessage().getChatId();
             Location location = update.getMessage().getLocation();
             String city = getCityFromLocation(location.getLatitude(), location.getLongitude());
             if (city != null) {
-                handleWeatherRequest(update.getMessage().getChatId(), city);
+                Boolean isWeeklyRequest = userRequestMap.get(chatId);
+                if (Boolean.TRUE.equals(isWeeklyRequest)) {
+                    handleWeeklyWeatherRequest(chatId, city);
+                }
+                else {
+                    handleWeatherRequest(chatId, city);
+                }
+                userRequestMap.remove(chatId); // Очистить состояние после обработки запроса
             }
             else {
-                sendMessage(update.getMessage().getChatId(), "Не удалось определить город по вашему местоположению.");
+                sendMessage(chatId, "Не удалось определить город по вашему местоположению.");
             }
-        }
-    }
-
-    private void sendStartMessage(long chatId) {
-        SendMessage message = new SendMessage();
-        message.setChatId(String.valueOf(chatId));
-        message.setText("Добро пожаловать! Нажмите кнопку 'Старт' для начала.");
-        message.setReplyMarkup(getStartKeyboard());
-        try {
-            execute(message);
-        }
-        catch (TelegramApiException e) {
-            log.error("Не удалось создать кнопку Старт", e);
         }
     }
 
@@ -101,30 +105,6 @@ public class WeatherService extends TelegramLongPollingBot {
         }
     }
 
-    private void sendMenuMessage(long chatId) {
-        SendMessage message = new SendMessage();
-        message.setChatId(chatId);
-        message.setText("Выберите действие:");
-        message.setReplyMarkup(getMenuKeyboard());
-        try {
-            execute(message);
-        }
-        catch (TelegramApiException exception) {
-            log.error("Не удалось отправить сообщение юзеру о его потенциальных действиях", exception);
-        }
-    }
-
-    @NotNull
-    private ReplyKeyboardMarkup getStartKeyboard() {
-        ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
-        List<KeyboardRow> keyboard = new ArrayList<>();
-        KeyboardRow row = new KeyboardRow();
-        row.add(new KeyboardButton("Старт"));
-        keyboard.add(row);
-        keyboardMarkup.setKeyboard(keyboard);
-        return keyboardMarkup;
-    }
-
     @NotNull
     private ReplyKeyboardMarkup getMenuKeyboard() {
         ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
@@ -134,7 +114,11 @@ public class WeatherService extends TelegramLongPollingBot {
         KeyboardButton weatherButton = new KeyboardButton("Погода");
         weatherButton.setRequestLocation(true);
         row.add(weatherButton);
-        row.add(new KeyboardButton("Информация"));
+
+        KeyboardButton weekWeatherButton = new KeyboardButton("Погода на неделю");
+        weekWeatherButton.setRequestLocation(true);
+        row.add(weekWeatherButton);
+
         keyboard.add(row);
         keyboardMarkup.setKeyboard(keyboard);
         return keyboardMarkup;
@@ -167,8 +151,24 @@ public class WeatherService extends TelegramLongPollingBot {
         }
     }
 
+    private void handleWeeklyWeatherRequest(long chatId, String city) {
+        try {
+            String weatherData = fetchWeeklyWeather(city);
+            if (weatherData == null) {
+                weatherData = getWeatherFromCache(city);
+            }
+            sendMessage(chatId, weatherData);
+        }
+        catch (Exception e) {
+            log.error("Ошибка получения прогноза погоды на неделю", e);
+            sendMessage(chatId, "Ошибка при получении прогноза погоды на неделю.");
+        }
+    }
+
     private String fetchWeather(String city) throws Exception {
-        String url = String.format("http://api.openweathermap.org/data/2.5/weather?q=%s&appid=%s&units=metric&lang=ru", city, openWeatherMapApiKey);
+        String url = String.format("http://api.openweathermap.org/data/2.5/weather?q=%s&appid=%s&units=metric&lang=ru",
+                city,
+                openWeatherMapApiKey);
         Request request = new Request.Builder().url(url).build();
         Response response = client.newCall(request).execute();
         if (response.body() != null) {
@@ -183,13 +183,59 @@ public class WeatherService extends TelegramLongPollingBot {
             int humidity = json.getJSONObject("main").getInt("humidity");
             double windSpeed = json.getJSONObject("wind").getDouble("speed");
 
-            String weatherData = String.format("Город: %s\n" +
-                            "Погода: %s\n" +
-                            "Температура: %.2f°C\n" +
-                            "Ощущается как: %.2f°C\n" +
-                            "Влажность: %d%%\n" +
-                            "Скорость ветра: %.2f м/с",
+            String weatherData = String.format("""
+                            Город: %s
+                            Погода: %s
+                            Температура: %.2f°C
+                            Ощущается как: %.2f°C
+                            Влажность: %d%%
+                            Скорость ветра: %.2f м/с""",
                     cityName, weatherDescription, temperature, feelsLike, humidity, windSpeed);
+            WeatherCache weatherCache = new WeatherCache();
+            weatherCache.setCity(city);
+            weatherCache.setWeatherData(weatherData);
+            weatherCache.setTimestamp(Timestamp.from(Instant.now()));
+            weatherRepository.save(weatherCache);
+            return weatherData;
+        }
+
+        return null;
+    }
+
+    private String fetchWeeklyWeather(String city) throws Exception {
+        String url = String.format("http://api.openweathermap.org/data/2.5/forecast/daily?q=%s&cnt=7&appid=%s&units=metric&lang=ru", city, openWeatherMapApiKey);
+        Request request = new Request.Builder().url(url).build();
+        Response response = client.newCall(request).execute();
+        if (response.body() != null) {
+            String responseBody = response.body().string();
+            JSONObject json = new JSONObject(responseBody);
+            JSONArray dailyForecasts = json.getJSONArray("list");
+
+            StringBuilder weeklyWeatherData = new StringBuilder();
+            for (int i = 0; i < dailyForecasts.length(); i++) {
+                JSONObject dayForecast = dailyForecasts.getJSONObject(i);
+                long date = dayForecast.getLong("dt");
+                String weatherDescription = dayForecast.getJSONArray("weather")
+                        .getJSONObject(0)
+                        .getString("description");
+                double temperature = dayForecast.getJSONObject("temp").getDouble("day");
+                double feelsLike = dayForecast.getJSONObject("temp").getDouble("feels_like");
+                int humidity = dayForecast.getInt("humidity");
+                double windSpeed = dayForecast.getDouble("speed");
+
+                weeklyWeatherData.append(String.format("""
+                                Дата: %s
+                                Погода: %s
+                                Температура: %.2f°C
+                                Ощущается как: %.2f°C
+                                Влажность: %d%%
+                                Скорость ветра: %.2f м/с
+
+                                """,
+                        new java.util.Date(date * 1000), weatherDescription, temperature, feelsLike, humidity, windSpeed));
+            }
+
+            String weatherData = weeklyWeatherData.toString();
             WeatherCache weatherCache = new WeatherCache();
             weatherCache.setCity(city);
             weatherCache.setWeatherData(weatherData);
