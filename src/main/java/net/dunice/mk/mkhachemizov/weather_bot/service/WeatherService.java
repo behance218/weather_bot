@@ -31,6 +31,7 @@ import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
+@SuppressWarnings("ALL")
 public class WeatherService extends TelegramLongPollingBot {
     private static final Logger log = LoggerFactory.getLogger(WeatherService.class);
     private final BotProperties bot;
@@ -55,17 +56,11 @@ public class WeatherService extends TelegramLongPollingBot {
             String messageText = update.getMessage().getText();
             long chatId = update.getMessage().getChatId();
 
-            if (messageText.equals("/start")) {
-                sendStartMessage(chatId);
-            }
-            else if (messageText.equals("Старт")) {
-                sendWelcomeMessage(chatId);
-            }
-            else if (messageText.equals("Меню")) {
-                sendMenuMessage(chatId);
-            }
-            else if (messageText.equals("Погода")) {
-                requestLocation(chatId);
+            switch (messageText) {
+                case "/start" -> sendStartMessage(chatId);
+                case "Старт" -> sendWelcomeMessage(chatId);
+                case "Меню" -> sendMenuMessage(chatId);
+                case "Погода" -> requestLocation(chatId);
             }
         }
         else if (update.hasMessage() && update.getMessage().hasLocation()) {
@@ -160,15 +155,14 @@ public class WeatherService extends TelegramLongPollingBot {
 
     private void handleWeatherRequest(long chatId, String city) {
         try {
-            String weatherData = getWeatherFromCache(city);
+            String weatherData = fetchWeather(city);
             if (weatherData == null) {
-                weatherData = fetchWeather(city);
-                saveWeatherToCache(city, weatherData);
+                weatherData = getWeatherFromCache(city);
             }
             sendMessage(chatId, weatherData);
         }
         catch (Exception e) {
-            log.error("Ошибка получения прогноза погоды");
+            log.error("Ошибка получения прогноза погоды", e);
             sendMessage(chatId, "Ошибка при получении прогноза погоды.");
         }
     }
@@ -178,17 +172,33 @@ public class WeatherService extends TelegramLongPollingBot {
         Request request = new Request.Builder().url(url).build();
         Response response = client.newCall(request).execute();
         if (response.body() != null) {
-            return response.body().string();
-        }
-        return null;
-    }
+            String responseBody = response.body().string();
+            JSONObject json = new JSONObject(responseBody);
+            String cityName = json.getString("name");
+            String weatherDescription = json.getJSONArray("weather")
+                    .getJSONObject(0)
+                    .getString("description");
+            double temperature = json.getJSONObject("main").getDouble("temp");
+            double feelsLike = json.getJSONObject("main").getDouble("feels_like");
+            int humidity = json.getJSONObject("main").getInt("humidity");
+            double windSpeed = json.getJSONObject("wind").getDouble("speed");
 
-    private void saveWeatherToCache(String city, String weatherData) {
-        WeatherCache weatherCache = new WeatherCache();
-        weatherCache.setCity(city);
-        weatherCache.setWeatherData(weatherData);
-        weatherCache.setTimestamp(Timestamp.from(Instant.now()));
-        weatherRepository.save(weatherCache);
+            String weatherData = String.format("Город: %s\n" +
+                            "Погода: %s\n" +
+                            "Температура: %.2f°C\n" +
+                            "Ощущается как: %.2f°C\n" +
+                            "Влажность: %d%%\n" +
+                            "Скорость ветра: %.2f м/с",
+                    cityName, weatherDescription, temperature, feelsLike, humidity, windSpeed);
+            WeatherCache weatherCache = new WeatherCache();
+            weatherCache.setCity(city);
+            weatherCache.setWeatherData(weatherData);
+            weatherCache.setTimestamp(Timestamp.from(Instant.now()));
+            weatherRepository.save(weatherCache);
+            return weatherData;
+        }
+
+        return null;
     }
 
     private String getWeatherFromCache(String city) {
@@ -207,8 +217,6 @@ public class WeatherService extends TelegramLongPollingBot {
             Response response = client.newCall(request).execute();
             assert response.body() != null;
             String responseBody = response.body().string();
-//            TODO: FIX ME |
-//                         v
             JSONArray jsonArray = new JSONArray(responseBody);
             if (!jsonArray.isEmpty()) {
                 JSONObject jsonObject = jsonArray.getJSONObject(0);
